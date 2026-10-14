@@ -1,2 +1,4 @@
 /dist/sidecar
 /dist/sidecar.exe
+/.vscode/
+/.clang*
