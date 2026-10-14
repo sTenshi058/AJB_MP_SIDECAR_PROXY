@@ -81,6 +81,54 @@ func TestClientBridgeForwardsDatagramsBothWays(t *testing.T) {
 	}
 }
 
+func TestClientBridgeFollowsChangingGameSourcePort(t *testing.T) {
+	transport := newTestTransport()
+	bridge, err := NewClientBridge("127.0.0.1:0", "host-peer", transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridge.Close()
+
+	firstGame, err := net.DialUDP("udp", nil, bridge.LocalAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer firstGame.Close()
+	secondGame, err := net.DialUDP("udp", nil, bridge.LocalAddr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secondGame.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- bridge.Run(ctx) }()
+
+	if _, err := firstGame.Write([]byte("first socket")); err != nil {
+		t.Fatal(err)
+	}
+	if packet := receiveTestPacket(t, transport.outgoing); string(packet.data) != "first socket" {
+		t.Fatalf("first forwarded packet = %q, want first socket", packet.data)
+	}
+
+	if _, err := secondGame.Write([]byte("new socket")); err != nil {
+		t.Fatal(err)
+	}
+	if packet := receiveTestPacket(t, transport.outgoing); string(packet.data) != "new socket" {
+		t.Fatalf("second forwarded packet = %q, want new socket", packet.data)
+	}
+
+	transport.incoming <- testPacket{peerID: "host-peer", data: []byte("reply to active socket")}
+	if got := readPacket(t, secondGame); got != "reply to active socket" {
+		t.Fatalf("reply arrived at %q; want active second socket", got)
+	}
+
+	cancel()
+	if err := receiveRunResult(t, done); err != nil {
+		t.Fatalf("bridge returned error after cancellation: %v", err)
+	}
+}
+
 func TestHostBridgeUsesPeerSpecificPorts(t *testing.T) {
 	game, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {

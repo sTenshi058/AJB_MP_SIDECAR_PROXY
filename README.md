@@ -30,3 +30,7 @@ to be confirmed.
 
 Unrecognized UDP/14001 packets are logged but not answered. Both players must
 keep their sidecars running throughout the match.
+
+On the first gameplay attempt, each sidecar logs the first UDP/1170 packet it
+forwards in each direction. If a match fails, those messages help distinguish
+browser discovery from actual gameplay traffic through EOS.

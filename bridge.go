@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 )
@@ -26,6 +27,9 @@ type ClientBridge struct {
 
 	gameAddrMu sync.RWMutex
 	gameAddr   *net.UDPAddr
+
+	firstGamePacket sync.Once
+	firstPeerPacket sync.Once
 }
 
 func NewClientBridge(listenAddr, peerID string, transport Transport) (*ClientBridge, error) {
@@ -110,13 +114,11 @@ func (b *ClientBridge) forwardGamePackets(ctx context.Context) error {
 		}
 
 		b.gameAddrMu.Lock()
-		if b.gameAddr == nil {
-			b.gameAddr = cloneUDPAddr(addr)
-		}
-		gameAddr := cloneUDPAddr(b.gameAddr)
+		previousGameAddr := cloneUDPAddr(b.gameAddr)
+		b.gameAddr = cloneUDPAddr(addr)
 		b.gameAddrMu.Unlock()
-		if !sameUDPAddr(addr, gameAddr) {
-			continue
+		if previousGameAddr != nil && !sameUDPAddr(addr, previousGameAddr) {
+			log.Printf("[UDP 1170] game source changed from %s to %s; forwarding from the new socket", previousGameAddr, addr)
 		}
 
 		if err := b.transport.Send(ctx, b.peerID, clonePacket(buffer[:n])); err != nil {
@@ -125,6 +127,9 @@ func (b *ClientBridge) forwardGamePackets(ctx context.Context) error {
 			}
 			return fmt.Errorf("send client packet to peer %q: %w", b.peerID, err)
 		}
+		b.firstGamePacket.Do(func() {
+			log.Printf("[UDP 1170] forwarded first game packet (%d bytes) to EOS peer %s", n, b.peerID)
+		})
 	}
 }
 
@@ -153,6 +158,9 @@ func (b *ClientBridge) forwardPeerPackets(ctx context.Context) error {
 			}
 			return fmt.Errorf("write relay packet to local game: %w", err)
 		}
+		b.firstPeerPacket.Do(func() {
+			log.Printf("[UDP 1170] forwarded first EOS packet (%d bytes) to local game", len(packet))
+		})
 	}
 }
 
@@ -165,6 +173,9 @@ type HostBridge struct {
 	mu     sync.Mutex
 	peers  map[string]*net.UDPConn
 	sendMu sync.Mutex
+
+	firstPeerPacket sync.Once
+	firstGamePacket sync.Once
 }
 
 func NewHostBridge(gameAddr string, transport Transport) (*HostBridge, error) {
@@ -237,6 +248,9 @@ func (b *HostBridge) receivePeerPackets(ctx context.Context, tasks *sync.WaitGro
 			}
 			return fmt.Errorf("write peer %q packet to local game: %w", peerID, err)
 		}
+		b.firstPeerPacket.Do(func() {
+			log.Printf("[UDP 1170] forwarded first EOS packet (%d bytes) from peer %s to local game", len(packet), peerID)
+		})
 	}
 }
 
@@ -291,6 +305,9 @@ func (b *HostBridge) forwardGameReplies(ctx context.Context, peerID string, conn
 			}
 			return fmt.Errorf("send game reply to peer %q: %w", peerID, err)
 		}
+		b.firstGamePacket.Do(func() {
+			log.Printf("[UDP 1170] forwarded first local-game packet (%d bytes) to EOS peer %s", n, peerID)
+		})
 	}
 }
 
