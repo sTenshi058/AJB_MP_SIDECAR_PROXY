@@ -1,6 +1,7 @@
 package eos
 
 /*
+#cgo CXXFLAGS: -I${SRCDIR}/../../../SDK/Include
 #include <stdlib.h>
 #include "native.h"
 */
