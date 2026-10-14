@@ -6,6 +6,8 @@ Details TBA.
 
 The EOS headers are supplied by the external EOS SDK, not this repository.
 
+AI assistance has been used for debugging purposes and testing.
+
 ## Direct gameplay connection test
 
 The AJB browser uses Unreal's LAN `FindSessions` path, while gameplay uses a

@@ -2,8 +2,11 @@
   "configurations": [
     {
       "name": "EOS SDK",
+      "compilerPath": "/usr/bin/g++",
       "cppStandard": "c++17",
+      "intelliSenseMode": "linux-gcc-x64",
       "includePath": [
+        "${workspaceFolder}/SDK/Include",
         "${workspaceFolder}/../SDK/Include",
         "${env:EOS_SDK_ROOT}/Include",
         "${workspaceFolder}/**"
