@@ -6,10 +6,13 @@ import (
 	"syscall"
 )
 
-func setReuseAddress(_, _ string, raw syscall.RawConn) error {
+func setDiscoverySocketOptions(_, _ string, raw syscall.RawConn) error {
 	var socketErr error
 	if err := raw.Control(func(fd uintptr) {
 		socketErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+		if socketErr == nil {
+			socketErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_BROADCAST, 1)
+		}
 	}); err != nil {
 		return err
 	}

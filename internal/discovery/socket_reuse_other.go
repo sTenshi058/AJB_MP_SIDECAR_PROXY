@@ -7,6 +7,6 @@ import (
 	"syscall"
 )
 
-func setReuseAddress(string, string, syscall.RawConn) error {
-	return errors.New("UDP discovery monitoring is unsupported on this operating system")
+func setDiscoverySocketOptions(string, string, syscall.RawConn) error {
+	return errors.New("UDP discovery responding is unsupported on this operating system")
 }

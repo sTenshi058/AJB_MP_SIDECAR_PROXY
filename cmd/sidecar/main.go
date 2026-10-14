@@ -135,13 +135,19 @@ func runSessionCommand(command string, args []string, stdout, stderr io.Writer) 
 		if resolvedGameAddr.IP == nil || !resolvedGameAddr.IP.IsLoopback() {
 			return errors.New("--game-addr must use a loopback address")
 		}
+		if resolvedGameAddr.Port < 1 {
+			return errors.New("--game-addr must use a port between 1 and 65535")
+		}
 	} else {
 		resolvedListenAddr, err := net.ResolveUDPAddr("udp", listenAddr)
 		if err != nil {
 			return fmt.Errorf("invalid --listen-addr: %w", err)
 		}
-		if resolvedListenAddr.IP == nil || !resolvedListenAddr.IP.IsLoopback() {
-			return errors.New("--listen-addr must use a loopback address")
+		if resolvedListenAddr.IP == nil || !resolvedListenAddr.IP.IsLoopback() || resolvedListenAddr.IP.To4() == nil {
+			return errors.New("--listen-addr must use an IPv4 loopback address")
+		}
+		if resolvedListenAddr.Port < 1 {
+			return errors.New("--listen-addr must use a port between 1 and 65535")
 		}
 	}
 
@@ -212,7 +218,11 @@ func runEOSCommand(ctx context.Context, command, lobbyID, gameAddr, listenAddr s
 		if err != nil {
 			return err
 		}
-		return runWithDiscoveryMonitor(ctx, stdout, func(runCtx context.Context) error {
+		advertisement, err := newDiscoveryAdvertisement(gameAddr)
+		if err != nil {
+			return err
+		}
+		return runWithDiscoveryResponder(ctx, stdout, advertisement, func(runCtx context.Context) error {
 			if err := bridge.Run(runCtx); err != nil {
 				return fmt.Errorf("run host UDP bridge: %w", err)
 			}
@@ -224,7 +234,7 @@ func runEOSCommand(ctx context.Context, command, lobbyID, gameAddr, listenAddr s
 		if err != nil {
 			return fmt.Errorf("join EOS lobby: %w", err)
 		}
-		if _, err := fmt.Fprintf(stdout, "Joined EOS lobby %s. Local UDP bridge listening on %s.\nIn the game's console, connect with: open %s\n", lobbyID, listenAddr, listenAddr); err != nil {
+		if _, err := fmt.Fprintf(stdout, "Joined EOS lobby %s. Local UDP bridge listening on %s.\nThe sidecar will answer the game's LAN server search; direct-connect fallback: open %s\n", lobbyID, listenAddr, listenAddr); err != nil {
 			return fmt.Errorf("print join status: %w", err)
 		}
 		bridge, err := relaybridge.NewClientBridge(listenAddr, hostPeerID, transport)
@@ -232,7 +242,11 @@ func runEOSCommand(ctx context.Context, command, lobbyID, gameAddr, listenAddr s
 			return err
 		}
 		defer bridge.Close()
-		return runWithDiscoveryMonitor(ctx, stdout, func(runCtx context.Context) error {
+		advertisement, err := newDiscoveryAdvertisement(listenAddr)
+		if err != nil {
+			return err
+		}
+		return runWithDiscoveryResponder(ctx, stdout, advertisement, func(runCtx context.Context) error {
 			if err := bridge.Run(runCtx); err != nil {
 				return fmt.Errorf("run client UDP bridge: %w", err)
 			}
@@ -243,15 +257,24 @@ func runEOSCommand(ctx context.Context, command, lobbyID, gameAddr, listenAddr s
 	}
 }
 
-func runWithDiscoveryMonitor(ctx context.Context, output io.Writer, runBridge func(context.Context) error) error {
+func newDiscoveryAdvertisement(endpoint string) (discovery.Advertisement, error) {
+	addr, err := net.ResolveUDPAddr("udp", endpoint)
+	if err != nil {
+		return discovery.Advertisement{}, fmt.Errorf("resolve discovery endpoint %q: %w", endpoint, err)
+	}
+	loopbackAddr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: addr.Port}
+	return discovery.NewAdvertisement("AJB Sidecar Relay", loopbackAddr)
+}
+
+func runWithDiscoveryResponder(ctx context.Context, output io.Writer, advertisement discovery.Advertisement, runBridge func(context.Context) error) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	monitor, err := discovery.StartUDPMonitor(runCtx, "0.0.0.0:14001", output)
+	responder, err := discovery.StartUDPResponder(runCtx, "0.0.0.0:14001", advertisement, output)
 	if err != nil {
-		return fmt.Errorf("start UDP/14001 discovery monitor: %w", err)
+		return fmt.Errorf("start UDP/14001 discovery responder: %w", err)
 	}
-	defer monitor.Close()
+	defer responder.Close()
 
 	bridgeResult := make(chan error, 1)
 	go func() {
@@ -265,16 +288,16 @@ func runWithDiscoveryMonitor(ctx context.Context, output io.Writer, runBridge fu
 			return err
 		}
 		return nil
-	case err := <-monitor.Done():
+	case err := <-responder.Done():
 		cancel()
 		<-bridgeResult
 		if err != nil {
-			return fmt.Errorf("UDP/14001 discovery monitor stopped: %w", err)
+			return fmt.Errorf("UDP/14001 discovery responder stopped: %w", err)
 		}
 		if ctx.Err() != nil {
 			return nil
 		}
-		return errors.New("UDP/14001 discovery monitor stopped unexpectedly")
+		return errors.New("UDP/14001 discovery responder stopped unexpectedly")
 	case <-ctx.Done():
 		cancel()
 		<-bridgeResult
