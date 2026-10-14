@@ -1,0 +1,14 @@
+{
+  "configurations": [
+    {
+      "name": "EOS SDK",
+      "cppStandard": "c++17",
+      "includePath": [
+        "${workspaceFolder}/../SDK/Include",
+        "${env:EOS_SDK_ROOT}/Include",
+        "${workspaceFolder}/**"
+      ]
+    }
+  ],
+  "version": 4
+}

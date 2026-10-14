@@ -4,6 +4,8 @@ Standalone Go sidecar for connecting AJB PC Port UDP gameplay through EOS P2P.
 It does not modify the game port.
 Details TBA.
 
+The EOS headers are supplied by the external EOS SDK, not this repository.
+
 ## Direct gameplay connection test
 
 The AJB browser uses Unreal's LAN `FindSessions` path, while gameplay uses a
