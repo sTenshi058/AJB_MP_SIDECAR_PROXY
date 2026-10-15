@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -97,7 +98,7 @@ func TestConfigBundleWritesSecretWithoutPrintingIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
 		t.Fatalf("bundle config permissions = %04o, want 0600", info.Mode().Perm())
 	}
 }
@@ -143,7 +144,7 @@ func TestWriteBundleArchiveIncludesFilesAndExecutableMode(t *testing.T) {
 	found := make(map[string]bool)
 	for _, file := range archive.File {
 		found[file.Name] = true
-		if file.Name == "sidecar" && file.Mode().Perm()&0100 == 0 {
+		if runtime.GOOS != "windows" && file.Name == "sidecar" && file.Mode().Perm()&0100 == 0 {
 			t.Fatalf("archived sidecar mode %v does not preserve executable bit", file.Mode())
 		}
 		if file.Name == "config.json" {
