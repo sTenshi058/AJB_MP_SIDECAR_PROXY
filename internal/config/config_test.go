@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const testBuildKey = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+
 func TestInitCreatesPrivateScaffold(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings", "config.json")
 	if err := Init(path, false); err != nil {
@@ -72,6 +74,61 @@ func TestConfigValidationReportsMissingValues(t *testing.T) {
 		if !strings.Contains(err.Error(), required) {
 			t.Errorf("validation error %q does not mention %q", err, required)
 		}
+	}
+}
+
+func TestEnvironmentSecretOverridesBundledSecret(t *testing.T) {
+	cfg := Config{ClientSecret: "bundled-secret"}
+	if got := cfg.EffectiveClientSecret("environment-secret"); got != "environment-secret" {
+		t.Fatalf("environment secret selected = %q, want override", got)
+	}
+	if got := cfg.EffectiveClientSecret(" "); got != "bundled-secret" {
+		t.Fatalf("bundled secret selected = %q, want fallback", got)
+	}
+}
+
+func TestEncryptAndResolveClientSecret(t *testing.T) {
+	const secret = "secret-value-not-in-config"
+	encrypted, err := EncryptClientSecret(secret, testBuildKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(encrypted, secret) {
+		t.Fatal("encrypted secret contains its plaintext")
+	}
+
+	cfg := Config{EncryptedClientSecret: encrypted}
+	got, err := cfg.ResolveClientSecret("", testBuildKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != secret {
+		t.Fatalf("decrypted secret = %q, want original value", got)
+	}
+}
+
+func TestEncryptedClientSecretRejectsWrongKeyAndTampering(t *testing.T) {
+	encrypted, err := EncryptClientSecret("test-secret", testBuildKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongKey := "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
+	if _, err := DecryptClientSecret(encrypted, wrongKey); err == nil {
+		t.Fatal("decryption succeeded with the wrong key")
+	}
+	if _, err := DecryptClientSecret(encrypted+"x", testBuildKey); err == nil {
+		t.Fatal("decryption succeeded after ciphertext tampering")
+	}
+}
+
+func TestResolveSecretUsesEnvironmentOverrideWithoutDecrypting(t *testing.T) {
+	cfg := Config{EncryptedClientSecret: "v1:invalid"}
+	got, err := cfg.ResolveClientSecret("override", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "override" {
+		t.Fatalf("resolved secret = %q, want environment override", got)
 	}
 }
 

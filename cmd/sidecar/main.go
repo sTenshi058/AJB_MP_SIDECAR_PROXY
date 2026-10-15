@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -20,6 +22,8 @@ import (
 )
 
 const version = "0.1.0-dev"
+
+var bundleKeyHex string
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
@@ -43,6 +47,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return nil
 	case "config":
 		return runConfig(args[1:], stdout, stderr)
+	case "package":
+		return runPackage(args[1:], stdout, stderr)
 	case "host":
 		return runSessionCommand("host", args[1:], stdout, stderr)
 	case "join":
@@ -58,6 +64,51 @@ func runConfig(args []string, stdout, stderr io.Writer) error {
 		return errors.New("config requires init or validate")
 	}
 	switch args[0] {
+	case "bundle":
+		flags := flag.NewFlagSet("config bundle", flag.ContinueOnError)
+		flags.SetOutput(stderr)
+		path := flags.String("config", "", "config file path containing EOS IDs")
+		output := flags.String("out", "", "output config path for the distributable bundle")
+		if err := flags.Parse(args[1:]); errors.Is(err, flag.ErrHelp) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if flags.NArg() != 0 {
+			return errors.New("config bundle does not accept positional arguments")
+		}
+		if *output == "" {
+			return errors.New("config bundle requires --out")
+		}
+		resolvedPath, err := configPath(*path)
+		if err != nil {
+			return err
+		}
+		cfg, err := config.Load(resolvedPath)
+		if err != nil {
+			return err
+		}
+		secret := os.Getenv(config.ClientSecretEnv)
+		if strings.TrimSpace(secret) == "" {
+			secret, err = cfg.ResolveClientSecret("", bundleKeyHex)
+			if err != nil {
+				return err
+			}
+		}
+		if err := cfg.Validate(secret); err != nil {
+			return err
+		}
+		cfg.ClientSecret = ""
+		cfg.EncryptedClientSecret, err = config.EncryptClientSecret(secret, bundleKeyHex)
+		if err != nil {
+			return err
+		}
+		if err := writeBundleConfig(*output, cfg); err != nil {
+			return err
+		}
+		_, err = fmt.Fprintf(stdout, "Created encrypted EOS config: %s\nThe sidecar build key is embedded in the executable; encryption only obscures the secret from casual inspection.\n", *output)
+		return err
+
 	case "init":
 		flags := flag.NewFlagSet("config init", flag.ContinueOnError)
 		flags.SetOutput(stderr)
@@ -78,7 +129,7 @@ func runConfig(args []string, stdout, stderr io.Writer) error {
 		if err := config.Init(resolvedPath, *force); err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(stdout, "Created config scaffold: %s\nSet EOS IDs in that file and %s in your environment.\n", resolvedPath, config.ClientSecretEnv)
+		_, err = fmt.Fprintf(stdout, "Created config scaffold: %s\nSet EOS IDs in that file; provide the client secret through %s or a local client_secret field.\n", resolvedPath, config.ClientSecretEnv)
 		return err
 
 	case "validate":
@@ -101,7 +152,11 @@ func runConfig(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if err := cfg.Validate(os.Getenv(config.ClientSecretEnv)); err != nil {
+		secret, err := cfg.ResolveClientSecret(os.Getenv(config.ClientSecretEnv), bundleKeyHex)
+		if err != nil {
+			return err
+		}
+		if err := cfg.Validate(secret); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintf(stdout, "EOS config is complete: %s\n", resolvedPath)
@@ -109,6 +164,189 @@ func runConfig(args []string, stdout, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown config command %q (expected init or validate)", args[0])
 	}
+}
+
+func runPackage(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("package", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	outputDir := flags.String("out", "", "output directory for the distributable bundle (defaults beside the executable)")
+	configPathFlag := flags.String("config", "", "config file path containing EOS IDs")
+	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("package does not accept positional arguments")
+	}
+
+	secret := os.Getenv(config.ClientSecretEnv)
+	if strings.TrimSpace(secret) == "" {
+		return fmt.Errorf("%s must be set in the environment to create a distribution bundle", config.ClientSecretEnv)
+	}
+	if bundleKeyHex == "" {
+		return errors.New("this executable has no config encryption key; rebuild with scripts/build.sh before packaging")
+	}
+	resolvedConfigPath, err := configPath(*configPathFlag)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(resolvedConfigPath)
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(secret); err != nil {
+		return err
+	}
+	cfg.ClientSecret = ""
+	cfg.EncryptedClientSecret, err = config.EncryptClientSecret(secret, bundleKeyHex)
+	if err != nil {
+		return err
+	}
+	resolvedOutputDir := *outputDir
+	if resolvedOutputDir == "" {
+		executablePath, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("resolve sidecar executable path: %w", err)
+		}
+		resolvedOutputDir = filepath.Join(filepath.Dir(executablePath), "package")
+	}
+	binaryName, libraryName, err := distributionNames(runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(resolvedOutputDir); err == nil {
+		return fmt.Errorf("output directory %q already exists; choose a new path or remove that specific directory first", resolvedOutputDir)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("check output directory %q: %w", resolvedOutputDir, err)
+	}
+
+	if err := os.MkdirAll(resolvedOutputDir, 0700); err != nil {
+		return fmt.Errorf("create package directory %q: %w", resolvedOutputDir, err)
+	}
+	if err := copyDistributionFiles(resolvedOutputDir, binaryName, libraryName); err != nil {
+		return err
+	}
+	if err := writeBundleConfig(filepath.Join(resolvedOutputDir, "config.json"), cfg); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(stdout, "Created %s bundle in %s\nShare the entire folder; config.json contains an encrypted client secret.\n", binaryName, resolvedOutputDir); err != nil {
+		return err
+	}
+	return nil
+}
+
+func writeBundleConfig(path string, cfg config.Config) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return fmt.Errorf("create bundle config %q: %w", path, err)
+	}
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+	if err := encoder.Encode(cfg); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write bundle config %q: %w", path, err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync bundle config %q: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close bundle config %q: %w", path, err)
+	}
+	return nil
+}
+
+func distributionNames(goos, goarch string) (string, string, error) {
+	switch goos {
+	case "windows":
+		return "sidecar.exe", "EOSSDK-Win64-Shipping.dll", nil
+	case "linux":
+		switch goarch {
+		case "amd64":
+			return "sidecar", "libEOSSDK-Linux-Shipping.so", nil
+		case "arm64":
+			return "sidecar", "libEOSSDK-LinuxArm64-Shipping.so", nil
+		default:
+			return "", "", fmt.Errorf("distribution packaging is not configured for Linux/%s", goarch)
+		}
+	case "darwin":
+		return "sidecar", "libEOSSDK-Mac-Shipping.dylib", nil
+	default:
+		return "", "", fmt.Errorf("distribution packaging is not configured for %s", goos)
+	}
+}
+
+func copyDistributionFiles(outputDir, binaryName, libraryName string) error {
+	executablePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve sidecar executable path: %w", err)
+	}
+	for _, name := range []string{binaryName, libraryName} {
+		sourcePath := filepath.Join(filepath.Dir(executablePath), name)
+		source, err := os.Open(sourcePath)
+		if err != nil {
+			return fmt.Errorf("open distribution dependency %q: %w", sourcePath, err)
+		}
+		destinationPath := filepath.Join(outputDir, name)
+		destination, err := os.OpenFile(destinationPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
+		if err != nil {
+			_ = source.Close()
+			return fmt.Errorf("create distribution file %q: %w", destinationPath, err)
+		}
+		_, copyErr := io.Copy(destination, source)
+		sourceCloseErr := source.Close()
+		destinationCloseErr := destination.Close()
+		if copyErr != nil {
+			return fmt.Errorf("copy distribution dependency %q: %w", name, copyErr)
+		}
+		if sourceCloseErr != nil {
+			return fmt.Errorf("close distribution dependency %q: %w", name, sourceCloseErr)
+		}
+		if destinationCloseErr != nil {
+			return fmt.Errorf("close distribution file %q: %w", destinationPath, destinationCloseErr)
+		}
+	}
+	if err := writeDistributionReadme(filepath.Join(outputDir, "README.txt")); err != nil {
+		return fmt.Errorf("copy bundle instructions: %w", err)
+	}
+	return nil
+}
+
+func writeDistributionReadme(path string) error {
+	const instructions = `AJB Multiplayer Sidecar
+
+This folder contains the sidecar and EOS runtime required to use your host's EOS configuration.
+Keep every file together. Start the AJB game before starting a host session.
+
+Windows:
+  Host: sidecar.exe host
+  Join: sidecar.exe join LOBBY_ID
+
+Linux:
+  Host: ./sidecar host
+  Join: ./sidecar join LOBBY_ID
+
+The host should share the printed lobby ID with the joining player. Both players must keep the
+sidecar running. In AJB, search for LAN games and select "AJB Sidecar Relay".
+
+config.json contains an encrypted EOS client secret. The sidecar includes the key needed to
+decrypt it, so a recipient can recover and reuse the secret. Do not publish this folder or share
+it outside the intended test group. The client policy should have only the permissions needed
+by this app.
+`
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return fmt.Errorf("create %q: %w", path, err)
+	}
+	if _, err := io.WriteString(file, instructions); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("write %q: %w", path, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close %q: %w", path, err)
+	}
+	return nil
 }
 
 func runSessionCommand(command string, args []string, stdout, stderr io.Writer) error {
@@ -174,16 +412,20 @@ func runSessionCommand(command string, args []string, stdout, stderr io.Writer) 
 	if err != nil {
 		return err
 	}
-	if err := cfg.Validate(os.Getenv(config.ClientSecretEnv)); err != nil {
+	secret, err := cfg.ResolveClientSecret(os.Getenv(config.ClientSecretEnv), bundleKeyHex)
+	if err != nil {
+		return err
+	}
+	if err := cfg.Validate(secret); err != nil {
 		return err
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return runEOSCommand(ctx, command, lobbyID, gameAddr, listenAddr, cfg, stdout)
+	return runEOSCommand(ctx, command, lobbyID, gameAddr, listenAddr, cfg, secret, stdout)
 }
 
-func runEOSCommand(ctx context.Context, command, lobbyID, gameAddr, listenAddr string, cfg config.Config, stdout io.Writer) error {
+func runEOSCommand(ctx context.Context, command, lobbyID, gameAddr, listenAddr string, cfg config.Config, clientSecret string, stdout io.Writer) error {
 	cacheDirectory, err := eosCachePath()
 	if err != nil {
 		return err
@@ -191,7 +433,7 @@ func runEOSCommand(ctx context.Context, command, lobbyID, gameAddr, listenAddr s
 	if err := os.MkdirAll(cacheDirectory, 0700); err != nil {
 		return fmt.Errorf("create EOS cache directory %q: %w", cacheDirectory, err)
 	}
-	client, err := eos.New(cfg, os.Getenv(config.ClientSecretEnv), cacheDirectory)
+	client, err := eos.New(cfg, clientSecret, cacheDirectory)
 	if err != nil {
 		return fmt.Errorf("initialize EOS: %w", err)
 	}
@@ -331,6 +573,8 @@ Usage:
   sidecar version
   sidecar config init [--path FILE] [--force]
   sidecar config validate [--path FILE]
+  sidecar config bundle --config FILE --out FILE
+  sidecar package [--config FILE] [--out DIR]
   sidecar host [--config FILE] [--game-addr 127.0.0.1:1170]
   sidecar join [--config FILE] [--listen-addr 127.0.0.1:1170] LOBBY_ID`)
 }

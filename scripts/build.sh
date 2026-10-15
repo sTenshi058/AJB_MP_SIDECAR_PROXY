@@ -34,6 +34,11 @@ case "$(uname -s)" in
 		;;
 esac
 
+BUNDLE_KEY_HEX=$(openssl rand -hex 32) || {
+	echo "Could not generate the build-specific config encryption key." >&2
+	exit 1
+}
+
 LIBRARY_PATH="$SDK_ROOT/Bin/$LIBRARY"
 
 if [ ! -f "$LIBRARY_PATH" ]; then
@@ -56,7 +61,7 @@ esac
 	CGO_CFLAGS="-I$SDK_ROOT/Include" \
 	CGO_CXXFLAGS="-I$SDK_ROOT/Include -std=c++17" \
 	CGO_LDFLAGS="$LINK_FLAGS" \
-	go build -o "$OUTPUT" ./cmd/sidecar
+	go build -ldflags "-X main.bundleKeyHex=$BUNDLE_KEY_HEX" -o "$OUTPUT" ./cmd/sidecar
 )
 cp "$LIBRARY_PATH" "$(dirname -- "$OUTPUT")/"
 echo "Built $OUTPUT against EOS SDK at $SDK_ROOT"

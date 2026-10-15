@@ -1,0 +1,124 @@
+name: Build sidecar releases
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Build Linux x86_64
+    runs-on: [self-hosted, linux, x64]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build sidecar
+        shell: bash
+        env:
+          EOS_SDK_ROOT: ${{ vars.EOS_SDK_ROOT_LINUX }}
+        run: |
+          test -n "$EOS_SDK_ROOT" || { echo "Set the EOS_SDK_ROOT_LINUX repository variable." >&2; exit 1; }
+          test -f "$EOS_SDK_ROOT/Include/eos_sdk.h" || { echo "EOS SDK headers not found at EOS_SDK_ROOT=$EOS_SDK_ROOT" >&2; exit 1; }
+          ./scripts/test.sh
+          go vet ./...
+          ./scripts/build.sh dist/sidecar
+
+      - name: Create configured bundle
+        shell: bash
+        env:
+          AJB_EOS_CLIENT_SECRET: ${{ secrets.AJB_EOS_CLIENT_SECRET }}
+        run: |
+          test -n "$AJB_EOS_CLIENT_SECRET" || { echo "Set the AJB_EOS_CLIENT_SECRET repository secret." >&2; exit 1; }
+          ./dist/sidecar package --config dist/config.json --out dist/package
+          tar -czf dist/sidecar-linux-amd64.tar.gz -C dist/package .
+
+      - name: Upload Linux release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-linux-amd64
+          path: dist/sidecar-linux-amd64.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Build Windows x86_64
+    runs-on: [self-hosted, windows, x64]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build sidecar
+        shell: bash
+        env:
+          EOS_SDK_ROOT: ${{ vars.EOS_SDK_ROOT_WINDOWS }}
+        run: |
+          test -n "$EOS_SDK_ROOT" || { echo "Set the EOS_SDK_ROOT_WINDOWS repository variable." >&2; exit 1; }
+          test -f "$EOS_SDK_ROOT/Include/eos_sdk.h" || { echo "EOS SDK headers not found at EOS_SDK_ROOT=$EOS_SDK_ROOT" >&2; exit 1; }
+          export PATH="$EOS_SDK_ROOT/Bin:$PATH"
+          export CGO_ENABLED=1
+          export CGO_CFLAGS="-I$EOS_SDK_ROOT/Include"
+          export CGO_CXXFLAGS="-I$EOS_SDK_ROOT/Include -std=c++17"
+          export CGO_LDFLAGS="-L$EOS_SDK_ROOT/Lib -lEOSSDK-Win64-Shipping -lstdc++"
+          go test -count=1 ./...
+          go vet ./...
+          ./scripts/build.sh dist/sidecar.exe
+
+      - name: Create configured bundle
+        shell: pwsh
+        env:
+          AJB_EOS_CLIENT_SECRET: ${{ secrets.AJB_EOS_CLIENT_SECRET }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:AJB_EOS_CLIENT_SECRET)) {
+            throw "Set the AJB_EOS_CLIENT_SECRET repository secret."
+          }
+          ./dist/sidecar.exe package --config dist/config.json --out dist/package
+          Compress-Archive -Path dist/package/* -DestinationPath dist/sidecar-windows-amd64.zip
+
+      - name: Upload Windows release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: sidecar-windows-amd64
+          path: dist/sidecar-windows-amd64.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sidecar-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG_NAME" \
+            release-assets/sidecar-linux-amd64.tar.gz \
+            release-assets/sidecar-windows-amd64.zip \
+            --verify-tag \
+            --generate-notes
