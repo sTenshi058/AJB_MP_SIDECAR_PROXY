@@ -1,7 +1,9 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,6 +117,55 @@ func TestPackageRequiresSecretWithoutPrintingIt(t *testing.T) {
 	err := run([]string{"package"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), config.ClientSecretEnv) {
 		t.Fatalf("got error %v; want missing client-secret error", err)
+	}
+}
+
+func TestWriteBundleArchiveIncludesFilesAndExecutableMode(t *testing.T) {
+	bundleDir := t.TempDir()
+	binaryPath := filepath.Join(bundleDir, "sidecar")
+	if err := os.WriteFile(binaryPath, []byte("binary"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(bundleDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"encrypted_client_secret":"v1:opaque"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "release.zip")
+	if err := writeBundleArchive(bundleDir, archivePath); err != nil {
+		t.Fatal(err)
+	}
+
+	archive, err := zip.OpenReader(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer archive.Close()
+	found := make(map[string]bool)
+	for _, file := range archive.File {
+		found[file.Name] = true
+		if file.Name == "sidecar" && file.Mode().Perm()&0100 == 0 {
+			t.Fatalf("archived sidecar mode %v does not preserve executable bit", file.Mode())
+		}
+		if file.Name == "config.json" {
+			input, err := file.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			data, readErr := io.ReadAll(input)
+			closeErr := input.Close()
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if closeErr != nil {
+				t.Fatal(closeErr)
+			}
+			if string(data) != `{"encrypted_client_secret":"v1:opaque"}` {
+				t.Fatalf("archived config = %q", data)
+			}
+		}
+	}
+	if !found["sidecar"] || !found["config.json"] {
+		t.Fatalf("archive entries = %v; want sidecar and config.json", found)
 	}
 }
 

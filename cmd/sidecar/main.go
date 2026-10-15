@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -171,6 +172,7 @@ func runPackage(args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	outputDir := flags.String("out", "", "output directory for the distributable bundle (defaults beside the executable)")
 	configPathFlag := flags.String("config", "", "config file path containing EOS IDs")
+	archivePath := flags.String("archive", "", "optional ZIP archive output path")
 	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
 		return nil
 	} else if err != nil {
@@ -230,8 +232,96 @@ func runPackage(args []string, stdout, stderr io.Writer) error {
 	if err := writeBundleConfig(filepath.Join(resolvedOutputDir, "config.json"), cfg); err != nil {
 		return err
 	}
+	if *archivePath != "" {
+		if err := writeBundleArchive(resolvedOutputDir, *archivePath); err != nil {
+			return err
+		}
+	}
 	if _, err := fmt.Fprintf(stdout, "Created %s bundle in %s\nShare the entire folder; config.json contains an encrypted client secret.\n", binaryName, resolvedOutputDir); err != nil {
 		return err
+	}
+	if *archivePath != "" {
+		if _, err := fmt.Fprintf(stdout, "Created release archive: %s\n", *archivePath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeBundleArchive(bundleDir, archivePath string) error {
+	archive, err := os.OpenFile(archivePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return fmt.Errorf("create release archive %q: %w", archivePath, err)
+	}
+	writer := zip.NewWriter(archive)
+	entries, err := os.ReadDir(bundleDir)
+	if err != nil {
+		_ = writer.Close()
+		_ = archive.Close()
+		_ = os.Remove(archivePath)
+		return fmt.Errorf("read bundle directory %q: %w", bundleDir, err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			_ = writer.Close()
+			_ = archive.Close()
+			_ = os.Remove(archivePath)
+			return fmt.Errorf("unexpected directory in bundle: %q", entry.Name())
+		}
+		path := filepath.Join(bundleDir, entry.Name())
+		info, err := entry.Info()
+		if err != nil {
+			_ = writer.Close()
+			_ = archive.Close()
+			_ = os.Remove(archivePath)
+			return fmt.Errorf("inspect bundle file %q: %w", path, err)
+		}
+		header, err := zip.FileInfoHeader(info)
+		if err != nil {
+			_ = writer.Close()
+			_ = archive.Close()
+			_ = os.Remove(archivePath)
+			return fmt.Errorf("create archive entry for %q: %w", path, err)
+		}
+		header.Name = entry.Name()
+		header.Method = zip.Deflate
+		output, err := writer.CreateHeader(header)
+		if err != nil {
+			_ = writer.Close()
+			_ = archive.Close()
+			_ = os.Remove(archivePath)
+			return fmt.Errorf("write archive entry for %q: %w", path, err)
+		}
+		input, err := os.Open(path)
+		if err != nil {
+			_ = writer.Close()
+			_ = archive.Close()
+			_ = os.Remove(archivePath)
+			return fmt.Errorf("open bundle file %q: %w", path, err)
+		}
+		_, copyErr := io.Copy(output, input)
+		closeErr := input.Close()
+		if copyErr != nil {
+			_ = writer.Close()
+			_ = archive.Close()
+			_ = os.Remove(archivePath)
+			return fmt.Errorf("archive bundle file %q: %w", path, copyErr)
+		}
+		if closeErr != nil {
+			_ = writer.Close()
+			_ = archive.Close()
+			_ = os.Remove(archivePath)
+			return fmt.Errorf("close bundle file %q: %w", path, closeErr)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		_ = archive.Close()
+		_ = os.Remove(archivePath)
+		return fmt.Errorf("finalize release archive %q: %w", archivePath, err)
+	}
+	if err := archive.Close(); err != nil {
+		_ = os.Remove(archivePath)
+		return fmt.Errorf("close release archive %q: %w", archivePath, err)
 	}
 	return nil
 }

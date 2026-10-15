@@ -11,10 +11,11 @@ AI assistance has been used for debugging purposes and testing.
 ## Building a tester bundle
 
 Build on each target operating system using your local EOS SDK installation
-(on Windows, use the supported Windows build environment such as Git Bash).
-The tester bundle contains the sidecar, the EOS runtime library for that OS,
-instructions, and a `config.json` with your EOS IDs and client secret. Testers
-do not need the EOS SDK headers or a client-secret setup of their own.
+(on Windows, use Git Bash with a MinGW-w64 C/C++ toolchain).
+The tester bundle contains the sidecar, the platform EOS runtime library,
+instructions, and a `config.json` with your EOS IDs and encrypted client
+secret. Testers do not need the EOS SDK headers or a client-secret setup of
+their own.
 
 1. Set `EOS_SDK_ROOT` if the SDK is not at `../SDK`, then run
    `./scripts/build.sh`.
@@ -23,12 +24,12 @@ do not need the EOS SDK headers or a client-secret setup of their own.
 3. Run `./dist/sidecar package` on Linux or
    `./dist/sidecar.exe package` on Windows. To use another EOS ID config file
    or output directory, pass `--config FILE` or `--out DIR`.
-4. Share the entire generated `dist/package` folder with testers. On Linux,
-   make it executable if extraction did not preserve permissions:
+4. Share the entire generated package folder with testers. On Linux, make
+   `sidecar` executable if extraction did not preserve permissions:
    `chmod +x sidecar`.
 
-Build and package each operating system on that operating system; this script
-does not cross-compile. The bundle supplies the EOS SDK runtime library, while
+Build and package each operating system on that operating system; the build
+script does not cross-compile. The bundle supplies the EOS SDK runtime, while
 standard OS libraries/runtime components may still be required.
 
 The package stores the secret encrypted with AES-GCM in `config.json`; each
@@ -42,30 +43,40 @@ build must be used with that exact build; rebuilding requires repackaging.
 Generated bundle directories are Git-ignored; do not override the output path
 to a tracked location.
 
-## Publishing Linux and Windows GitHub releases
+## Building Linux and Windows release assets locally
 
-The repository includes a tag-triggered release workflow. It builds natively
-on self-hosted Linux and Windows x86_64 runners because the EOS SDK and cgo
-toolchains are platform-specific. Configure both runners with:
+There is no GitHub Actions or self-hosted runner requirement. Build each
+release asset natively on a machine running its target OS, then upload both
+ZIP files manually to a GitHub release:
 
-- Go matching the version in `go.mod`, Git Bash, OpenSSL, and the required C/C++
-  compiler/linker for that platform.
-- The EOS SDK installed locally, with its license permitting use on that
-  runner. Do not commit or upload the SDK headers or import libraries.
-- An `EOS_SDK_ROOT_LINUX` and `EOS_SDK_ROOT_WINDOWS` repository variable pointing
-  to each runner's installed SDK root.
-- An `AJB_EOS_CLIENT_SECRET` repository Actions secret. The workflow embeds a
-  build-specific decryption key in each executable and includes a config
-  encrypted for that build in its release archive.
+- On Linux x86_64, install Go, OpenSSL, a C/C++ toolchain, and your licensed
+  EOS SDK. Set `EOS_SDK_ROOT` if the SDK is not at `../SDK`.
+- On Windows x86_64, install Go, Git for Windows (Git Bash), OpenSSL, a
+  MinGW-w64 C/C++ toolchain available in `PATH`, and your licensed EOS SDK.
+  Set `EOS_SDK_ROOT` to its installation directory. The EOS SDK's Windows
+  import library must be linkable by the selected MinGW toolchain.
+- On each machine, provide `AJB_EOS_CLIENT_SECRET` in the shell environment.
+  In Git Bash, enter it without echoing or putting it in shell history:
+  `read -rsp "EOS client secret: " AJB_EOS_CLIENT_SECRET; export AJB_EOS_CLIENT_SECRET; echo`
 
-After configuring Actions, push a version tag such as `v0.1.0`. The workflow
-builds `sidecar-linux-amd64.tar.gz` and `sidecar-windows-amd64.zip`, then
-publishes both as release assets. `workflow_dispatch` can also build and
-upload short-lived Actions artifacts without creating a GitHub release.
-Protect version tags and limit who can trigger release workflows: each
-published archive contains a usable encrypted EOS credential, and recipients
-can recover it from the matching executable. Rotate the client secret if an
-archive is exposed beyond the intended testers.
+Then build that platform's release archive:
+
+```sh
+./scripts/build-release.sh v0.1.0
+```
+
+The script runs tests and vet, builds the native executable, packages the
+matching EOS runtime DLL/shared library and encrypted config, and creates a
+ZIP archive under `dist/` named for its OS and version. Run it once on Linux
+and once on Windows; the two builds have different encryption keys, so each
+archive contains the bundle created by its matching executable. Upload both
+ZIP files to the GitHub release for that version. Do not commit or upload the
+EOS SDK itself.
+
+If you only have Linux, the Windows release cannot be produced with this
+native build script. You would need a Windows machine or a correctly
+configured MinGW cross-toolchain plus compatible Windows EOS import library;
+this repository does not currently automate that cross-build.
 
 ## Server-browser and gameplay test
 

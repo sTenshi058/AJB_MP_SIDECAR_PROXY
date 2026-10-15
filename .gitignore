@@ -1,6 +1,8 @@
 /dist/sidecar
 /dist/sidecar.exe
 /dist/package/
+/dist/package-*/
+/dist/sidecar-*.zip
 /dist/dist/
 /.vscode/
 /.clang*
