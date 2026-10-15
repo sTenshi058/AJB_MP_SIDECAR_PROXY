@@ -412,6 +412,7 @@ Keep every file together. Start the AJB game before starting a host session.
 Windows:
   Host: sidecar.exe host
   Join: sidecar.exe join LOBBY_ID
+The package includes the EOS runtime DLL and statically links the MinGW runtime.
 
 Linux:
   Host: ./sidecar host

@@ -26,7 +26,7 @@ case "$(uname -s)" in
 		;;
 	MINGW*|MSYS*|CYGWIN*)
 		LIBRARY=EOSSDK-Win64-Shipping.dll
-		LINK_FLAGS="-L$SDK_ROOT/Lib -lEOSSDK-Win64-Shipping -lstdc++"
+		LINK_FLAGS="-L$SDK_ROOT/Lib -static -static-libgcc -static-libstdc++ -lEOSSDK-Win64-Shipping -lstdc++"
 		;;
 	*)
 		echo "Unsupported build environment: $(uname -s)" >&2

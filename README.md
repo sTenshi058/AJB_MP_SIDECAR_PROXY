@@ -8,6 +8,16 @@ The EOS headers are supplied by the external EOS SDK, not this repository.
 
 AI assistance has been used for debugging purposes and testing.
 
+## Windows release dependencies
+
+The Windows build statically links the MinGW GCC and C++ runtime libraries,
+including libstdc++, and the distribution package includes
+`EOSSDK-Win64-Shipping.dll`. Testers should not need to separately install or
+download the MinGW runtime or EOS SDK. Normal Windows system components remain
+required. This depends on the MinGW toolchain providing static runtime
+libraries; verify the release executable on a clean Windows machine before
+publishing it.
+
 ## Server-browser and gameplay test
 
 The sidecar listens on UDP/14001 while hosting or joined to an EOS lobby. It
